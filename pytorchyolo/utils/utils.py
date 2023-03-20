@@ -41,6 +41,7 @@ def worker_seed_set(worker_id):
 
 def to_cpu(tensor):
     return tensor.detach().cpu()
+    # return tensor.cpu()
 
 
 def load_classes(path):
@@ -325,7 +326,11 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
     for xi, x in enumerate(prediction):  # image index, image inference
         # Apply constraints
         # x[((x[..., 2:4] < min_wh) | (x[..., 2:4] > max_wh)).any(1), 4] = 0  # width-height
+        # print(x[..., 4].shape)
         x = x[x[..., 4] > conf_thres]  # confidence
+        # print(prediction.shape)
+        # print(x[:,4])
+        grid_obj_conf = torch.clone(x)
 
         # If none remain process next image
         if not x.shape[0]:
@@ -371,7 +376,7 @@ def non_max_suppression(prediction, conf_thres=0.25, iou_thres=0.45, classes=Non
             print(f'WARNING: NMS time limit {time_limit}s exceeded')
             break  # time limit exceeded
 
-    return output
+    return output, grid_obj_conf
 
 
 def print_environment_info():
