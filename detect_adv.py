@@ -21,6 +21,7 @@ from pytorchyolo.models import load_model
 from pytorchyolo.utils.utils import load_classes, rescale_boxes, non_max_suppression, print_environment_info
 from pytorchyolo.utils.datasets import ImageFolder
 from pytorchyolo.utils.transforms import Resize, DEFAULT_TRANSFORMS
+from pytorchyolo.utils.nps import NPSCalculator
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -37,7 +38,7 @@ def initialize_patch(img_size=416, patch_frac=0.015):
     patch_size = img_size * patch_frac
     patch_dim = int(patch_size**(0.5)) # sqrt
     patch = torch.rand(1, 3, patch_dim, patch_dim)
-    print("Patch shape = " + str(patch.shape))
+    # print("Patch shape = " + str(patch.shape))
     return patch
 
 def get_patch_dummy(patch, data_shape, patch_x, patch_y):
@@ -130,15 +131,16 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     os.makedirs("adv_output", exist_ok=True)
 
     model.eval()  # Set model to evaluation mode
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    img_detections = []  # Stores detections for each image index
-    imgs = []  # Stores image paths
+    # Hyperparameters
+    dog_class = 16.0
+    epoch = 500
+    conf_threshold = 0.25
+    lr = 0.5
 
     # Get dog image to attack
     dog_img = None
-    for (img_paths, input_imgs) in tqdm.tqdm(dataloader, desc="Detecting"):
+    for (_, input_imgs) in tqdm.tqdm(dataloader, desc="Detecting"):
         dog_img = input_imgs
         break
 
@@ -152,75 +154,75 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
         orig_bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
     # Grab largest object bbox (or the dog's in this case)
     for bbox in orig_bboxes[0]:
-        if bbox[-1] == 16.0:
+        bbox_class = bbox[-1]
+        if bbox_class == dog_class:
             attack_bbox = bbox
             break
 
     # Initialize patch
-    patch = initialize_patch()
+    patch = initialize_patch().to(device)
+    # optimizer = torch.optim.Adam([patch], lr=lr, amsgrad=True)
+    # optimizer = torch.optim.SGD([patch], lr=lr)
+
     # Attach patch on largest object
-    x, y = get_patch_loc(attack_bbox, patch.shape[2])
+    patch_size = patch.shape[-1]
+    # x, y = get_patch_loc(attack_bbox, patch_size)
+    x, y = 52, 0
     patch_dummy = get_patch_dummy(patch, dog_img.shape, x, y).to(device)
     img_mask = patch_dummy.clone() # To mask the img
     img_mask[img_mask != 0] = 1.0 # Turn patch values into 1's
     patch_mask = (1 - img_mask).to(device) # To mask the patch
-    adv_img = patch_on_img(patch_dummy, dog_img, patch_mask, img_mask)
 
-    adv_img = Variable(adv_img.type(Tensor))
-    adv_img.requires_grad_()
+    nps_calculator = NPSCalculator("nps_print.txt", patch_size, device).to(device)
 
-    optimizer = torch.optim.Adam([adv_img], lr=1)
+    # adv_img = Variable(adv_img.type(Tensor))
+    # adv_img.requires_grad_()
 
-    # Training loop
-    epoch = 500
-    prev_conf_sum = 0
-    for e in range(epoch):
-        # Get detections
-        # adv_img = Variable(adv_img)
-        # adv_img.requires_grad_()
-
+    for e in range(epoch+1):
+        patch = Variable(patch.type(Tensor))
+        patch.requires_grad_(True)
+        patch_dummy = get_patch_dummy(patch, dog_img.shape, x, y).to(device)
+        adv_img = patch_on_img(patch_dummy, dog_img, patch_mask, img_mask).to(device)
         output = model(adv_img)
-        detections, grid_obj_conf = non_max_suppression(output, conf_thres, nms_thres)
-        detections = detections[0]
-        conf_sum = torch.log(torch.sum(grid_obj_conf[:,4]))
-        p_tv = total_variation(patch) # total_varation calculates tv per channel
-        p_tv = torch.sum(p_tv)
+
+        grid_obj_conf = output[0][output[0][... , 4] > conf_threshold]
+        conf_sum = torch.max(grid_obj_conf[:,4])
+
+        tv = total_variation(patch) # total_varation calculates tv per channel
+        tv = torch.sum(tv) / torch.numel(patch)
+        tv_loss = tv * 1.5
+
+        nps = nps_calculator(patch)
+        nps_loss = nps * 5
+
+        loss = conf_sum # + tv_loss + nps_loss
 
         if e % 50 == 0:
             print("------- Epoch {} -------".format(e))
-            print("Objectiveness score sum: {} / {}".format(conf_sum, len(grid_obj_conf)))
-            print("Patch total variation loss: {}".format(p_tv))
+            print("Objectiveness score sum:    {:.4f} / {}".format(conf_sum, len(grid_obj_conf)))
+            print("Patch total variation loss: {:.4f} / {:.4f}".format(tv_loss, tv))
+            print("Patch NPS loss:             {:.4f} / {:.4f}".format(nps_loss, nps))
 
-
-        # if adv_img.grad is not None:
-        #     adv_img.grad.zero()
-        optimizer.zero_grad()
-        loss = 100 * conf_sum # + 0.5 * p_tv
-        loss.backward()
-        optimizer.step()
+        if patch.grad is not None:
+            patch.grad.zero()
+        # optimizer.zero_grad()
+        loss.backward(retain_graph=False)
+        # optimizer.step()
         
-        # Mask image area of the patch
-        # adv_grad = adv_img.grad.detach().clone()
-        # adv_grad = torch.mul(adv_grad, img_mask)
-        # # Apply gradient to patch
-        # # Note: Subtracting adv_grad trains patch to reduce obj score sum
-        # adv_img = adv_img - 0.05 * adv_grad
+        grad = patch.grad.detach().clone()
+        patch = patch - (1 * grad)
         # adv_img = torch.clamp(adv_img, min=0.0, max=1.0)
 
-        # Extract patch for saving
-        patch = adv_img[0][:, x:x+patch.shape[-1],y:y+patch.shape[-1]]
+        # patch.data.clamp_(0, 1)
+        patch = torch.clamp(patch, min=0.0, max=1.0)
 
-        if e % 50 == 0:
+        if e % 100 == 0:
             transform = T.ToPILImage()
             img = transform(adv_img[0])
             img.save("adv_output/adv_img_{}.png".format(e))
-            img = transform(patch)
+            img = transform(patch[0])
             img.save("adv_output/adv_patch_{}.png".format(e))
 
-        # if abs(conf_sum - prev_conf_sum) < 0.01:
-        #     print("Score difference too small. Breaking out of train.")
-        #     break
-        # prev_conf_sum = conf_sum
         # print("\n")
     
     output = model(adv_img)
