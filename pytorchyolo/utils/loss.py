@@ -64,6 +64,15 @@ def compute_loss(predictions, targets, model):
 
     # Build yolo targets
     tcls, tbox, indices, anchors = build_targets(predictions, targets, model)  # targets
+    print("-------------------")
+    print(tcls)
+    print("@@@@@@@@@@@@@@@@@@")
+    print(tbox)
+    print("@@@@@@@@@@@@@@@@@@")
+    print(indices)
+    print("@@@@@@@@@@@@@@@@@@")
+    print(anchors)
+    print("-------------------")
 
     # Define different loss functions classification
     BCEcls = nn.BCEWithLogitsLoss(
@@ -84,7 +93,7 @@ def compute_loss(predictions, targets, model):
         # Check if there are targets for this batch
         if num_targets:
             # Load the corresponding values from the predictions for each of the targets
-            ps = layer_predictions[b, anchor, grid_j, grid_i]
+            ps = layer_predictions[b, anchor, grid_j, grid_i] # shape [b, 85]
 
             # Regression of the box
             # Apply sigmoid to xy offset predictions in each cell that has a target
@@ -115,9 +124,9 @@ def compute_loss(predictions, targets, model):
         # Calculate the BCE loss between the on the fly generated target and the network prediction
         lobj += BCEobj(layer_predictions[..., 4], tobj) # obj loss
 
-    lbox *= 0.05
-    lobj *= 1.0
-    lcls *= 0.5
+    lbox *= 0.05 # bbox
+    lobj *= 1.0 # IoU
+    lcls *= 0.5 #
 
     # Merge losses
     loss = lbox + lobj + lcls

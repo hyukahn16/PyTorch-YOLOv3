@@ -22,6 +22,7 @@ from pytorchyolo.utils.utils import load_classes, rescale_boxes, non_max_suppres
 from pytorchyolo.utils.datasets import ImageFolder
 from pytorchyolo.utils.transforms import Resize, DEFAULT_TRANSFORMS
 from pytorchyolo.utils.nps import NPSCalculator
+from pytorchyolo.utils.parse_config import parse_data_config
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -74,52 +75,15 @@ def patch_on_img(patch_dummy, img, patch_mask, img_mask):
 
 def detect_directory(model_path, weights_path, img_path, classes, output_path,
                      batch_size=8, img_size=416, n_cpu=8, conf_thres=0.5, nms_thres=0.5):
-    """Detects objects on all images in specified directory and saves output images with drawn detections.
+    data_config = parse_data_config("config/custom.data")
+    train_path = data_config["train"]
 
-    :param model_path: Path to model definition file (.cfg)
-    :type model_path: str
-    :param weights_path: Path to weights or checkpoint file (.weights or .pth)
-    :type weights_path: str
-    :param img_path: Path to directory with images to inference
-    :type img_path: str
-    :param classes: List of class names
-    :type classes: [str]
-    :param output_path: Path to output directory
-    :type output_path: str
-    :param batch_size: Size of each image batch, defaults to 8
-    :type batch_size: int, optional
-    :param img_size: Size of each image dimension for yolo, defaults to 416
-    :type img_size: int, optional
-    :param n_cpu: Number of cpu threads to use during batch generation, defaults to 8
-    :type n_cpu: int, optional
-    :param conf_thres: Object confidence threshold, defaults to 0.5
-    :type conf_thres: float, optional
-    :param nms_thres: IOU threshold for non-maximum suppression, defaults to 0.5
-    :type nms_thres: float, optional
-    """
-    dataloader = _create_data_loader(img_path, batch_size, img_size, n_cpu)
+    dataloader = _create_data_loader(train_path, batch_size, img_size, n_cpu)
     model = load_model(model_path, weights_path)
     detect(model, dataloader, output_path, conf_thres, nms_thres)
 
 
 def detect(model, dataloader, output_path, conf_thres, nms_thres):
-    """Inferences images with model.
-
-    :param model: Model for inference
-    :type model: models.Darknet
-    :param dataloader: Dataloader provides the batches of images to inference
-    :type dataloader: DataLoader
-    :param output_path: Path to output directory
-    :type output_path: str
-    :param conf_thres: Object confidence threshold, defaults to 0.5
-    :type conf_thres: float, optional
-    :param nms_thres: IOU threshold for non-maximum suppression, defaults to 0.5
-    :type nms_thres: float, optional
-    :return: List of detections. The coordinates are given for the padded image that is provided by the dataloader.
-        Use `utils.rescale_boxes` to transform them into the desired input image coordinate system before its transformed by the dataloader),
-        List of input image paths
-    :rtype: [Tensor], [str]
-    """
     # Delete existing images for sanity
     try:
         shutil.rmtree("adv_output")
@@ -134,16 +98,19 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # Hyperparameters
     dog_class = 16.0
-    epoch = 500
+    epoch = 2000
     conf_threshold = 0.25
-    lr = 0.5
+    lr = 0.05
 
     # Get dog image to attack
     dog_img = None
-    for (_, input_imgs) in tqdm.tqdm(dataloader, desc="Detecting"):
-        dog_img = input_imgs
+    dog_img_targs = None
+    for (_, imgs, targets) in tqdm.tqdm(dataloader, desc="Detecting"):
+        dog_img = imgs
+        print(targets)
+        dog_img_targs = targets
         break
-
+    exit()
     # Configure input
     dog_img = Variable(dog_img.type(Tensor)) # Image values between [0, 1]
     dog_img.to(device)
@@ -152,6 +119,7 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     with torch.no_grad():
         detections = model(dog_img)
         orig_bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
+    print(orig_bboxes)
     # Grab largest object bbox (or the dog's in this case)
     for bbox in orig_bboxes[0]:
         bbox_class = bbox[-1]
@@ -189,10 +157,12 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
         grid_obj_conf = output[0][output[0][... , 4] > conf_threshold]
         conf_sum = torch.log(torch.sum(grid_obj_conf[:,4]))
         # conf_sum = torch.max(grid_obj_conf[:,4])
+
         # 2. Total variation loss
         tv = total_variation(patch) # total_varation calculates tv per channel
         tv = torch.sum(tv) / torch.numel(patch)
         tv_loss = tv * 1.5
+
         # 3. Non-printability score loss
         nps = nps_calculator(patch)
         nps_loss = nps * 5
