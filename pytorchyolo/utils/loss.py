@@ -64,15 +64,6 @@ def compute_loss(predictions, targets, model):
 
     # Build yolo targets
     tcls, tbox, indices, anchors = build_targets(predictions, targets, model)  # targets
-    print("-------------------")
-    print(tcls)
-    print("@@@@@@@@@@@@@@@@@@")
-    print(tbox)
-    print("@@@@@@@@@@@@@@@@@@")
-    print(indices)
-    print("@@@@@@@@@@@@@@@@@@")
-    print(anchors)
-    print("-------------------")
 
     # Define different loss functions classification
     BCEcls = nn.BCEWithLogitsLoss(
