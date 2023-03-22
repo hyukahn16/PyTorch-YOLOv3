@@ -23,6 +23,7 @@ from pytorchyolo.utils.datasets import ImageFolder
 from pytorchyolo.utils.transforms import Resize, DEFAULT_TRANSFORMS
 from pytorchyolo.utils.nps import NPSCalculator
 from pytorchyolo.utils.parse_config import parse_data_config
+from pytorchyolo.utils.loss import compute_loss
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
