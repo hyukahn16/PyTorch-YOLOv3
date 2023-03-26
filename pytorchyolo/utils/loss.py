@@ -87,7 +87,6 @@ def compute_loss(predictions, targets, model):
         if num_targets:
             # Load the corresponding values from the predictions for each of the targets
             ps = layer_predictions[b, anchor, grid_j, grid_i] # shape [b, 85]
-
             # Regression of the box
             # Apply sigmoid to xy offset predictions in each cell that has a target
             pxy = ps[:, :2].sigmoid()
