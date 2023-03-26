@@ -109,39 +109,38 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     dog_img_targs = None
     for (_, imgs, targets) in tqdm.tqdm(dataloader, desc="Detecting"):
         dog_img = imgs
-        dog_img_targs = torch.reshape(targets, (3, 6)).to(device)
+        dog_img_targs = targets.view((3, 6)).to(device)
         break
     print(dog_img_targs)
     # Configure input
     dog_img = Variable(dog_img.type(Tensor)) # Image values between [0, 1]
     dog_img.to(device)
 
-    # TEST TEST TEST
+    # Testing loss computation
     with torch.no_grad():
         model.train()
         outputs = model(dog_img)
         loss, loss_components = compute_loss(outputs, dog_img_targs, model)
         print(loss)
-        model.eval()
-    exit()
-    # Get bboxes
-    with torch.no_grad():
-        detections = model(dog_img)
-        orig_bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
-    print(orig_bboxes)
+        # model.eval()
 
-    # Grab largest object bbox (or the dog's in this case)
-    for bbox in orig_bboxes[0]:
-        bbox_class = bbox[-1]
-        if bbox_class == dog_class:
-            attack_bbox = bbox
-            break
+    # Get bboxes
+    # with torch.no_grad():
+    #     detections = model(dog_img)
+    #     orig_bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
+    # print(orig_bboxes)
+
+    # # Grab largest object bbox (or the dog's in this case)
+    # for bbox in orig_bboxes[0]:
+    #     bbox_class = bbox[-1]
+    #     if bbox_class == dog_class:
+    #         attack_bbox = bbox
+    #         break
 
     # Initialize patch
     patch = initialize_patch().to(device)
     patch.requires_grad_(True)
     optimizer = torch.optim.Adam([patch], lr=lr, amsgrad=True)
-    # optimizer = torch.optim.SGD([patch], lr=lr)
 
     # Attach patch on largest object
     patch_size = patch.shape[-1]
@@ -157,36 +156,35 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
 
     # adv_img = Variable(adv_img.type(Tensor))
     # adv_img.requires_grad_()
-
     for e in range(epoch+1):
         patch_dummy = get_patch_dummy(patch, dog_img.shape, x, y).to(device)
         adv_img = patch_on_img(patch_dummy, dog_img, patch_mask, img_mask).to(device)
         output = model(adv_img)
+        loss, loss_components = compute_loss(output, dog_img_targs, model)
+        # # 1. Object loss
+        # grid_obj_conf = output[0][output[0][... , 4] > conf_threshold]
+        # conf_sum = torch.log(torch.sum(grid_obj_conf[:,4]))
+        # # conf_sum = torch.max(grid_obj_conf[:,4])
 
-        # 1. Object loss
-        grid_obj_conf = output[0][output[0][... , 4] > conf_threshold]
-        conf_sum = torch.log(torch.sum(grid_obj_conf[:,4]))
-        # conf_sum = torch.max(grid_obj_conf[:,4])
+        # # 2. Total variation loss
+        # tv = total_variation(patch) # total_varation calculates tv per channel
+        # tv = torch.sum(tv) / torch.numel(patch)
+        # tv_loss = tv * 1.5
 
-        # 2. Total variation loss
-        tv = total_variation(patch) # total_varation calculates tv per channel
-        tv = torch.sum(tv) / torch.numel(patch)
-        tv_loss = tv * 1.5
+        # # 3. Non-printability score loss
+        # nps = nps_calculator(patch)
+        # nps_loss = nps * 5
 
-        # 3. Non-printability score loss
-        nps = nps_calculator(patch)
-        nps_loss = nps * 5
+        # loss = conf_sum # + tv_loss + nps_loss
 
-        loss = conf_sum # + tv_loss + nps_loss
-
-        if e % 50 == 0:
-            print("------- Epoch {} -------".format(e))
-            print("Obj score sum:        {:.4f} / {}".
-                format(conf_sum, len(grid_obj_conf)))
-            print("Total variation loss: {:.4f} / {:.4f}".
-                format(tv_loss, tv))
-            print("NPS loss:             {:.4f} / {:.4f}".
-                format(nps_loss, nps))
+        # if e % 50 == 0:
+        #     print("------- Epoch {} -------".format(e))
+        #     print("Obj score sum:        {:.4f} / {}".
+        #         format(conf_sum, len(grid_obj_conf)))
+        #     print("Total variation loss: {:.4f} / {:.4f}".
+        #         format(tv_loss, tv))
+        #     print("NPS loss:             {:.4f} / {:.4f}".
+        #         format(nps_loss, nps))
 
         # if patch.grad is not None:
         #     patch.grad.zero()
