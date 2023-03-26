@@ -1,6 +1,7 @@
 import math
 
 import torch
+from torch.cuda import Device
 import torch.nn as nn
 
 from .utils import to_cpu
@@ -63,7 +64,8 @@ def compute_loss(predictions, targets, model):
     lcls, lbox, lobj = torch.zeros(1, device=device), torch.zeros(1, device=device), torch.zeros(1, device=device)
 
     # Build yolo targets
-    tcls, tbox, indices, anchors = build_targets(predictions, targets, model)  # targets
+    tcls, tbox, indices, anchors = build_targets(
+        predictions, targets, model, device)  # targets
 
     # Define different loss functions classification
     BCEcls = nn.BCEWithLogitsLoss(
@@ -95,6 +97,7 @@ def compute_loss(predictions, targets, model):
             pbox = torch.cat((pxy, pwh), 1)
             # Calculate CIoU or GIoU for each target with the predicted box for its cell + anchor
             iou = bbox_iou(pbox.T, tbox[layer_index], x1y1x2y2=False, CIoU=True)
+            iou = iou.to(device)
             # We want to minimize our loss so we and the best possible IoU is 1 so we take 1 - IoU and reduce it with a mean
             lbox += (1.0 - iou).mean()  # iou loss
 
@@ -125,7 +128,7 @@ def compute_loss(predictions, targets, model):
     return loss, to_cpu(torch.cat((lbox, lobj, lcls, loss)))
 
 
-def build_targets(p, targets, model):
+def build_targets(p, targets, model, device="cpu"):
     # Build targets for compute_loss(), input targets(image,class,x,y,w,h)
     na, nt = 3, targets.shape[0]  # number of anchors, targets #TODO
     tcls, tbox, indices, anch = [], [], [], []
@@ -143,6 +146,7 @@ def build_targets(p, targets, model):
         gain[2:6] = torch.tensor(p[i].shape)[[3, 2, 3, 2]]  # xyxy gain
         # Scale targets by the number of yolo layer cells, they are now in the yolo cell coordinate system
         t = targets * gain
+        t = t.to(device)
         # Check if we have targets
         if nt:
             # Calculate ration between anchor and target box for both width and height
