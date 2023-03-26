@@ -109,7 +109,7 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     dog_img_targs = None
     for (_, imgs, targets) in tqdm.tqdm(dataloader, desc="Detecting"):
         dog_img = imgs
-        dog_img_targs = torch.reshape(targets, (3, 6))
+        dog_img_targs = torch.reshape(targets, (3, 6)).to(device)
         break
     print(dog_img_targs)
     # Configure input
