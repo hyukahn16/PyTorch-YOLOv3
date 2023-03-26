@@ -19,11 +19,12 @@ from torch.autograd import Variable
 
 from pytorchyolo.models import load_model
 from pytorchyolo.utils.utils import load_classes, rescale_boxes, non_max_suppression, print_environment_info
-from pytorchyolo.utils.datasets import ImageFolder
+from pytorchyolo.utils.datasets import ImageFolder, ListDataset
 from pytorchyolo.utils.transforms import Resize, DEFAULT_TRANSFORMS
 from pytorchyolo.utils.nps import NPSCalculator
 from pytorchyolo.utils.parse_config import parse_data_config
 from pytorchyolo.utils.loss import compute_loss
+from pytorchyolo.utils.augmentations import AUGMENTATION_TRANSFORMS
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -108,19 +109,27 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     dog_img_targs = None
     for (_, imgs, targets) in tqdm.tqdm(dataloader, desc="Detecting"):
         dog_img = imgs
-        print(targets)
-        dog_img_targs = targets
+        dog_img_targs = torch.reshape(targets, (3, 6))
         break
-    exit()
+    print(dog_img_targs)
     # Configure input
     dog_img = Variable(dog_img.type(Tensor)) # Image values between [0, 1]
     dog_img.to(device)
 
+    # TEST TEST TEST
+    with torch.no_grad():
+        model.train()
+        outputs = model(dog_img)
+        loss, loss_components = compute_loss(outputs, dog_img_targs, model)
+        print(loss)
+        model.eval()
+    exit()
     # Get bboxes
     with torch.no_grad():
         detections = model(dog_img)
         orig_bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
     print(orig_bboxes)
+
     # Grab largest object bbox (or the dog's in this case)
     for bbox in orig_bboxes[0]:
         bbox_class = bbox[-1]
@@ -223,9 +232,13 @@ def _create_data_loader(img_path, batch_size, img_size, n_cpu):
     :return: Returns DataLoader
     :rtype: DataLoader
     """
-    dataset = ImageFolder(
+    # dataset = ImageFolder(
+    #     img_path,
+    #     transform=transforms.Compose([DEFAULT_TRANSFORMS, Resize(img_size)]))
+    dataset = ListDataset(
         img_path,
-        transform=transforms.Compose([DEFAULT_TRANSFORMS, Resize(img_size)]))
+        img_size=img_size,
+        transform=AUGMENTATION_TRANSFORMS)
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -238,8 +251,8 @@ def _create_data_loader(img_path, batch_size, img_size, n_cpu):
 def run():
     print_environment_info()
     parser = argparse.ArgumentParser(description="Detect objects on images.")
-    parser.add_argument("-m", "--model", type=str, default="config/yolov3.cfg", help="Path to model definition file (.cfg)")
-    parser.add_argument("-w", "--weights", type=str, default="yolov3.weights", help="Path to weights or checkpoint file (.weights or .pth)")
+    parser.add_argument("-m", "--model", type=str, default="config/yolov3-tiny.cfg", help="Path to model definition file (.cfg)")
+    parser.add_argument("-w", "--weights", type=str, default="yolov3-tiny.weights", help="Path to weights or checkpoint file (.weights or .pth)")
     parser.add_argument("-i", "--images", type=str, default="data/samples", help="Path to directory with images to inference")
     parser.add_argument("-c", "--classes", type=str, default="data/coco.names", help="Path to classes label file (.names)")
     parser.add_argument("-o", "--output", type=str, default="output", help="Path to output directory")

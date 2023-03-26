@@ -60,7 +60,7 @@ def _create_data_loader(img_path, batch_size, img_size, n_cpu, multiscale_traini
 def run():
     print_environment_info()
     parser = argparse.ArgumentParser(description="Trains the YOLO model.")
-    parser.add_argument("-m", "--model", type=str, default="config/yolov3.cfg", help="Path to model definition file (.cfg)")
+    parser.add_argument("-m", "--model", type=str, default="config/yolov3-tiny.cfg", help="Path to model definition file (.cfg)")
     parser.add_argument("-d", "--data", type=str, default="config/custom.data", help="Path to data config file (.data)")
     parser.add_argument("-e", "--epochs", type=int, default=300, help="Number of epochs")
     parser.add_argument("-v", "--verbose", action='store_true', help="Makes the training more verbose")
@@ -154,14 +154,16 @@ def run():
         model.train()  # Set model to training mode
 
         for batch_i, (_, imgs, targets) in enumerate(tqdm.tqdm(dataloader, desc=f"Training Epoch {epoch}")):
+
             batches_done = len(dataloader) * epoch + batch_i
 
             imgs = imgs.to(device, non_blocking=True)
             targets = targets.to(device)
 
             outputs = model(imgs)
-
+            print(targets)
             loss, loss_components = compute_loss(outputs, targets, model)
+            exit()
             loss.backward()
 
             ###############
