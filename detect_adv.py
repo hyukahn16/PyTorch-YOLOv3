@@ -100,7 +100,7 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # Hyperparameters
     dog_class = 16.0
-    epoch = 2000
+    epoch = 100
     conf_threshold = 0.25
     lr = 0.05
 
@@ -111,11 +111,14 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
         dog_img = imgs
         dog_img_targs = targets.view((3, 6)).to(device)
         break
-    print(dog_img_targs)
-    # Configure input
-    dog_img = Variable(dog_img.type(Tensor)) # Image values between [0, 1]
-    dog_img.to(device)
+    T.ToPILImage()(dog_img[0]).save("adv_output/1.png")
+    print(dog_img.shape)
+    # print(dog_img_targs)
 
+    # Configure input
+    dog_img = Variable(dog_img.type(torch.cuda.Tensor)) # Image values between [0, 1]
+    dog_img.to(device)
+    T.ToPILImage()(dog_img[0]).save("adv_output/1-1.png")
     # Testing loss computation
     with torch.no_grad():
         model.train()
@@ -123,7 +126,7 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
         loss, loss_components = compute_loss(outputs, dog_img_targs, model)
         print(loss)
         # model.eval()
-
+    T.ToPILImage()(dog_img[0]).save("adv_output/2.png")
     # Get bboxes
     # with torch.no_grad():
     #     detections = model(dog_img)
@@ -156,7 +159,10 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
 
     # adv_img = Variable(adv_img.type(Tensor))
     # adv_img.requires_grad_()
+    T.ToPILImage()(dog_img[0]).save("adv_output/3.png")
     for e in range(epoch+1):
+        patch = Variable(patch.type(Tensor))
+        patch.requires_grad_(True)
         patch_dummy = get_patch_dummy(patch, dog_img.shape, x, y).to(device)
         adv_img = patch_on_img(patch_dummy, dog_img, patch_mask, img_mask).to(device)
         output = model(adv_img)
@@ -177,8 +183,10 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
 
         # loss = conf_sum # + tv_loss + nps_loss
 
-        # if e % 50 == 0:
-        #     print("------- Epoch {} -------".format(e))
+        if e % 50 == 0:
+            print("------- Epoch {} -------".format(e))
+            # print("Loss: {:.4f}".format(loss.clone().detach().cpu().numpy()[0]))
+            print("Loss : {}".format(loss[0]))
         #     print("Obj score sum:        {:.4f} / {}".
         #         format(conf_sum, len(grid_obj_conf)))
         #     print("Total variation loss: {:.4f} / {:.4f}".
@@ -186,17 +194,18 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
         #     print("NPS loss:             {:.4f} / {:.4f}".
         #         format(nps_loss, nps))
 
-        # if patch.grad is not None:
-        #     patch.grad.zero()
-        optimizer.zero_grad()
+        if patch.grad is not None:
+            patch.grad.zero()
+            # optimizer.zero_grad()
         loss.backward(retain_graph=True)
-        optimizer.step()
-        
-        # grad = patch.grad.detach().clone()
-        # patch = patch - grad
 
-        patch.data.clamp_(0, 1) # For optimizer
-        # patch = torch.clamp(patch, min=0.0, max=1.0) # For manual autograd
+        # optimizer.step()
+        
+        grad = patch.grad.detach().clone()
+        patch = patch + grad
+
+        # patch.data.clamp_(0, 1) # For optimizer
+        patch = torch.clamp(patch, min=0.0, max=1.0) # For manual autograd
 
         if e % 100 == 0:
             transform = T.ToPILImage()
@@ -207,13 +216,13 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
 
         # print("\n")
     
-    output = model(adv_img)
-    bboxes, _ = non_max_suppression(output, conf_thres, nms_thres)
-    print("---- Training Finished ----")
-    print("New BBOX")
-    print(bboxes)
-    print("Original BBOX")
-    print(orig_bboxes)
+    # output = model(adv_img)
+    # bboxes, _ = non_max_suppression(output, conf_thres, nms_thres)
+    # print("---- Training Finished ----")
+    # print("New BBOX")
+    # print(bboxes)
+    # print("Original BBOX")
+    # print(orig_bboxes)
 
 
 def _create_data_loader(img_path, batch_size, img_size, n_cpu):
@@ -236,7 +245,8 @@ def _create_data_loader(img_path, batch_size, img_size, n_cpu):
     dataset = ListDataset(
         img_path,
         img_size=img_size,
-        transform=AUGMENTATION_TRANSFORMS)
+        # transform=AUGMENTATION_TRANSFORMS
+        )
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
