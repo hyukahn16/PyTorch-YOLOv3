@@ -122,8 +122,12 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
         adv_img = patch_on_img(patch_dummy, dog_img, patch_mask, img_mask).to(device)
 
         output = model(adv_img)
-        loss, loss_components = compute_loss(output, dog_img_targs, model)
-        log_loss = torch.log(loss)
+        bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
+        bboxes = bboxes[0]
+        bbox = [bboxes[i] for i in range(len(bboxes)) if bboxes[i][5] == 7][0]
+        print(bbox)
+        exit()
+        
 
         if patch.grad is not None:
             patch.grad.zero()
