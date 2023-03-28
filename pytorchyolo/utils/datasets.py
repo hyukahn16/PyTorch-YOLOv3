@@ -119,6 +119,7 @@ class ListDataset(Dataset):
         else:
             img = torch.tensor(img)
             img = img.permute(2, 0, 1) / 255.0
+            img = T.Resize((self.img_size, self.img_size))(img)
             # boxes dim: (3, 5)
             zeros = torch.zeros(3, 1)
             bb_targets = torch.tensor(boxes)

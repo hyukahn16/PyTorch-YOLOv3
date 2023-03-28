@@ -25,6 +25,7 @@ from pytorchyolo.utils.nps import NPSCalculator
 from pytorchyolo.utils.parse_config import parse_data_config
 from pytorchyolo.utils.loss import compute_loss
 from pytorchyolo.utils.augmentations import AUGMENTATION_TRANSFORMS
+from pytorchyolo.detect import _draw_and_save_output_images
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -82,7 +83,8 @@ def detect_directory(model_path, weights_path, img_path, classes, output_path,
 
     dataloader = _create_data_loader(train_path, batch_size, img_size, n_cpu)
     model = load_model(model_path, weights_path)
-    detect(model, dataloader, output_path, conf_thres, nms_thres)
+    bboxes, img_path = detect(model, dataloader, output_path, conf_thres, nms_thres)
+    _draw_and_save_output_images(bboxes, img_path, img_size, "adv_output", classes)
 
 
 def detect(model, dataloader, output_path, conf_thres, nms_thres):
@@ -100,14 +102,16 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # Hyperparameters
     dog_class = 16.0
-    epoch = 10000
+    epoch = 500
     conf_threshold = 0.25
     lr = 0.05
 
     # Get dog image to attack
+    dog_img_path = None
     dog_img = None
     dog_img_targs = None
-    for (_, imgs, targets) in tqdm.tqdm(dataloader, desc="Detecting"):
+    for (img_path, imgs, targets) in tqdm.tqdm(dataloader, desc="Detecting"):
+        dog_img_path = img_path
         dog_img = imgs
         dog_img_targs = targets.view((3, 6)).to(device)
         break
@@ -158,6 +162,7 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
 
     # adv_img = Variable(adv_img.type(Tensor))
     # adv_img.requires_grad_()
+    last_adv_img_path = None
     for e in range(epoch+1):
         patch = Variable(patch.type(Tensor))
         patch.requires_grad_(True)
@@ -215,8 +220,11 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
 
         if e % 100 == 0:
             transform = T.ToPILImage()
+
             img = transform(adv_img[0])
-            img.save("adv_output/adv_img_{}.png".format(e))
+            last_adv_img_path = "adv_output/adv_img_{}.png".format(e)
+            img.save(last_adv_img_path)
+
             img = transform(patch[0])
             img.save("adv_output/adv_patch_{}.png".format(e))
 
@@ -225,11 +233,13 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     model.eval()
     output = model(adv_img)
     bboxes, _ = non_max_suppression(output, conf_thres, nms_thres)
-    print("---- Training Finished ----")
+    print("---- Training Finished ----\n\n\n")
     print("New BBOX")
     print(bboxes)
     print("Original BBOX")
     print(orig_bboxes)
+
+    return bboxes, [last_adv_img_path]
 
 
 def _create_data_loader(img_path, batch_size, img_size, n_cpu):
