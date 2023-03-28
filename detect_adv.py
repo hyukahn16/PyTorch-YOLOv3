@@ -5,34 +5,20 @@ from __future__ import division
 import os
 import argparse
 import tqdm
-import random
-import numpy as np
 import shutil
 
-from PIL import Image
 
 import torch
-import torchvision.transforms as transforms
 import torchvision.transforms as T
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
 
 from pytorchyolo.models import load_model
-from pytorchyolo.utils.utils import load_classes, rescale_boxes, non_max_suppression, print_environment_info
-from pytorchyolo.utils.datasets import ImageFolder, ListDataset
-from pytorchyolo.utils.transforms import Resize, DEFAULT_TRANSFORMS
-from pytorchyolo.utils.nps import NPSCalculator
+from pytorchyolo.utils.utils import load_classes, non_max_suppression, print_environment_info
+from pytorchyolo.utils.datasets import ListDataset
 from pytorchyolo.utils.parse_config import parse_data_config
 from pytorchyolo.utils.loss import compute_loss
-from pytorchyolo.utils.augmentations import AUGMENTATION_TRANSFORMS
 from pytorchyolo.detect import _draw_and_save_output_images
-
-import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.ticker import NullLocator
-
-# https://kornia.readthedocs.io/en/latest/_modules/kornia/losses/total_variation.html
-from kornia.losses import total_variation
 
 Tensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
 
@@ -88,7 +74,7 @@ def detect_directory(model_path, weights_path, img_path, classes, output_path,
 
 
 def detect(model, dataloader, output_path, conf_thres, nms_thres):
-    # Delete existing images for sanity
+    # Delete existing images
     try:
         shutil.rmtree("adv_output")
     except FileNotFoundError:
@@ -98,126 +84,60 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     os.makedirs(output_path, exist_ok=True)
     os.makedirs("adv_output", exist_ok=True)
 
-    model.eval()  # Set model to evaluation mode
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    # Hyperparameters
-    dog_class = 16.0
-    epoch = 500
-    conf_threshold = 0.25
-    lr = 0.05
 
     # Get dog image to attack
-    dog_img_path = None
     dog_img = None
     dog_img_targs = None
-    for (img_path, imgs, targets) in tqdm.tqdm(dataloader, desc="Detecting"):
-        dog_img_path = img_path
-        dog_img = imgs
+    for (img_path, img, targets) in tqdm.tqdm(dataloader, desc="Detecting"):
+        # img values should be between [0, 1]
+        dog_img = Variable(img.type(Tensor)).to(device)
         dog_img_targs = targets.view((3, 6)).to(device)
-        break
-    print(dog_img.shape)
-    # print(dog_img_targs)
-
-    # Configure input
-    dog_img = Variable(dog_img.type(Tensor)) # Image values between [0, 1]
-    dog_img.to(device)
 
     # Get bboxes
     with torch.no_grad():
         model.eval()
         detections = model(dog_img)
         orig_bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
-    print(orig_bboxes)
-
-    # Testing loss computation
-    with torch.no_grad():
-        model.train()
-        outputs = model(dog_img)
-        loss, loss_components = compute_loss(outputs, dog_img_targs, model)
-        print(loss)
-
-    # # Grab largest object bbox (or the dog's in this case)
-    # for bbox in orig_bboxes[0]:
-    #     bbox_class = bbox[-1]
-    #     if bbox_class == dog_class:
-    #         attack_bbox = bbox
-    #         break
 
     # Initialize patch
-    patch = initialize_patch().to(device)
+    patch = initialize_patch(patch_frac=0.01).to(device)
     patch.requires_grad_(True)
-    optimizer = torch.optim.Adam([patch], lr=lr, amsgrad=True)
 
-    # Attach patch on largest object
-    patch_size = patch.shape[-1]
-    # x, y = get_patch_loc(attack_bbox, patch_size)
-    x, y = 0, 0
+    # Attach patch to attacking image
     # x, y = 123, 300 # Around truck
+    x, y = 0, 0
     patch_dummy = get_patch_dummy(patch, dog_img.shape, x, y).to(device)
     img_mask = patch_dummy.clone() # To mask the img
     img_mask[img_mask != 0] = 1.0 # Turn patch values into 1's
     patch_mask = (1 - img_mask).to(device) # To mask the patch
 
-    nps_calculator = NPSCalculator("nps_print.txt", patch_size, device).to(device)
-
-    # adv_img = Variable(adv_img.type(Tensor))
-    # adv_img.requires_grad_()
     last_adv_img_path = None
+    epoch = 1000
+    model.train()
     for e in range(epoch+1):
         patch = Variable(patch.type(Tensor))
         patch.requires_grad_(True)
         patch_dummy = get_patch_dummy(patch, dog_img.shape, x, y).to(device)
         adv_img = patch_on_img(patch_dummy, dog_img, patch_mask, img_mask).to(device)
+
         output = model(adv_img)
         loss, loss_components = compute_loss(output, dog_img_targs, model)
         log_loss = torch.log(loss)
 
-        # # 1. Object loss
-        # grid_obj_conf = output[0][output[0][... , 4] > conf_threshold]
-        # conf_sum = torch.log(torch.sum(grid_obj_conf[:,4]))
-        # # conf_sum = torch.max(grid_obj_conf[:,4])
-
-        # 2. Total variation loss
-        # tv = total_variation(patch) # total_varation calculates tv per channel
-        # tv = torch.sum(tv) / torch.numel(patch)
-        # tv_loss = torch.log(1 / (tv))
-
-        # # 3. Non-printability score loss
-        # nps = nps_calculator(patch)
-        # nps_loss = nps * 5
-
-        total_loss = log_loss # + tv_loss # + nps_loss
-
         if patch.grad is not None:
             patch.grad.zero()
-            # optimizer.zero_grad()
-        total_loss.backward(retain_graph=True)
-
-        # optimizer.step()
-        
+        log_loss.backward(retain_graph=True)
         grad = patch.grad.detach().clone()
         patch = patch + 400 * grad
-
-        # patch.data.clamp_(0, 1) # For optimizer
         patch = torch.clamp(patch, min=0.0, max=1.0) # For manual autograd
 
+        # Print training info
         if e % 50 == 0:
             print("------- Epoch {} -------".format(e))
-            # print("Loss: {:.4f}".format(loss.clone().detach().cpu().numpy()[0]))
             print("Loss                : {} / {}".format(log_loss[0], loss[0]))
-            # print("Loss component      : {}".format(loss_components))
-
-        #     print("Obj score sum:        {:.4f} / {}".
-        #         format(conf_sum, len(grid_obj_conf)))
-
-            # print("Total variation loss: {:.4f} / {:.4f}".format(tv_loss, tv))
-
-        #     print("NPS loss:             {:.4f} / {:.4f}".
-        #         format(nps_loss, nps))
-
-            print("Total loss          : {:.5f}".format(total_loss[0]))
-            print(grad[0][0][0][0])
-
+            print("Loss component      : {}".format(loss_components))
+        # Save adversarial image and patch checkpoints
         if e % 100 == 0:
             transform = T.ToPILImage()
 
@@ -227,8 +147,6 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
 
             img = transform(patch[0])
             img.save("adv_output/adv_patch_{}.png".format(e))
-
-        # print("\n")
     
     model.eval()
     output = model(adv_img)
@@ -256,14 +174,9 @@ def _create_data_loader(img_path, batch_size, img_size, n_cpu):
     :return: Returns DataLoader
     :rtype: DataLoader
     """
-    # dataset = ImageFolder(
-    #     img_path,
-    #     transform=transforms.Compose([DEFAULT_TRANSFORMS, Resize(img_size)]))
     dataset = ListDataset(
         img_path,
-        img_size=img_size,
-        # transform=AUGMENTATION_TRANSFORMS
-        )
+        img_size=img_size)
     dataloader = DataLoader(
         dataset,
         batch_size=batch_size,
