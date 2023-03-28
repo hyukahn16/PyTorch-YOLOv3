@@ -114,7 +114,7 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
 
     last_adv_img_path = None
     epoch = 1000
-    model.train()
+    model.eval()
     for e in range(epoch+1):
         patch = Variable(patch.type(Tensor))
         patch.requires_grad_(True)
