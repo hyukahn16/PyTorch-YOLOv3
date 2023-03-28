@@ -8,6 +8,7 @@ import warnings
 import numpy as np
 from PIL import Image
 from PIL import ImageFile
+import torchvision.transforms as T
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -109,12 +110,19 @@ class ListDataset(Dataset):
         # -----------
         #  Transform
         # -----------
-        if self.transform:
+        if self.transform:            
             try:
                 img, bb_targets = self.transform((img, boxes))
             except Exception:
                 print("Could not apply transform.")
                 return
+        else:
+            img = torch.tensor(img)
+            img = img.permute(2, 0, 1) / 255.0
+            # boxes dim: (3, 5)
+            zeros = torch.zeros(3, 1)
+            bb_targets = torch.tensor(boxes)
+            bb_targets = torch.cat((zeros, bb_targets), dim=1)
 
         return img_path, img, bb_targets
 

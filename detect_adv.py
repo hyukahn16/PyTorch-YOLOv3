@@ -100,7 +100,7 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # Hyperparameters
     dog_class = 16.0
-    epoch = 100
+    epoch = 10000
     conf_threshold = 0.25
     lr = 0.05
 
@@ -111,27 +111,26 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
         dog_img = imgs
         dog_img_targs = targets.view((3, 6)).to(device)
         break
-    T.ToPILImage()(dog_img[0]).save("adv_output/1.png")
     print(dog_img.shape)
     # print(dog_img_targs)
 
     # Configure input
-    dog_img = Variable(dog_img.type(torch.cuda.Tensor)) # Image values between [0, 1]
+    dog_img = Variable(dog_img.type(Tensor)) # Image values between [0, 1]
     dog_img.to(device)
-    T.ToPILImage()(dog_img[0]).save("adv_output/1-1.png")
+
+    # Get bboxes
+    with torch.no_grad():
+        model.eval()
+        detections = model(dog_img)
+        orig_bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
+    print(orig_bboxes)
+
     # Testing loss computation
     with torch.no_grad():
         model.train()
         outputs = model(dog_img)
         loss, loss_components = compute_loss(outputs, dog_img_targs, model)
         print(loss)
-        # model.eval()
-    T.ToPILImage()(dog_img[0]).save("adv_output/2.png")
-    # Get bboxes
-    # with torch.no_grad():
-    #     detections = model(dog_img)
-    #     orig_bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
-    # print(orig_bboxes)
 
     # # Grab largest object bbox (or the dog's in this case)
     # for bbox in orig_bboxes[0]:
@@ -148,7 +147,7 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     # Attach patch on largest object
     patch_size = patch.shape[-1]
     # x, y = get_patch_loc(attack_bbox, patch_size)
-    x, y = 52, 0
+    x, y = 0, 0
     # x, y = 123, 300 # Around truck
     patch_dummy = get_patch_dummy(patch, dog_img.shape, x, y).to(device)
     img_mask = patch_dummy.clone() # To mask the img
@@ -159,7 +158,6 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
 
     # adv_img = Variable(adv_img.type(Tensor))
     # adv_img.requires_grad_()
-    T.ToPILImage()(dog_img[0]).save("adv_output/3.png")
     for e in range(epoch+1):
         patch = Variable(patch.type(Tensor))
         patch.requires_grad_(True)
@@ -167,45 +165,53 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
         adv_img = patch_on_img(patch_dummy, dog_img, patch_mask, img_mask).to(device)
         output = model(adv_img)
         loss, loss_components = compute_loss(output, dog_img_targs, model)
+        log_loss = torch.log(loss)
+
         # # 1. Object loss
         # grid_obj_conf = output[0][output[0][... , 4] > conf_threshold]
         # conf_sum = torch.log(torch.sum(grid_obj_conf[:,4]))
         # # conf_sum = torch.max(grid_obj_conf[:,4])
 
-        # # 2. Total variation loss
+        # 2. Total variation loss
         # tv = total_variation(patch) # total_varation calculates tv per channel
         # tv = torch.sum(tv) / torch.numel(patch)
-        # tv_loss = tv * 1.5
+        # tv_loss = torch.log(1 / (tv))
 
         # # 3. Non-printability score loss
         # nps = nps_calculator(patch)
         # nps_loss = nps * 5
 
-        # loss = conf_sum # + tv_loss + nps_loss
-
-        if e % 50 == 0:
-            print("------- Epoch {} -------".format(e))
-            # print("Loss: {:.4f}".format(loss.clone().detach().cpu().numpy()[0]))
-            print("Loss : {}".format(loss[0]))
-        #     print("Obj score sum:        {:.4f} / {}".
-        #         format(conf_sum, len(grid_obj_conf)))
-        #     print("Total variation loss: {:.4f} / {:.4f}".
-        #         format(tv_loss, tv))
-        #     print("NPS loss:             {:.4f} / {:.4f}".
-        #         format(nps_loss, nps))
+        total_loss = log_loss # + tv_loss # + nps_loss
 
         if patch.grad is not None:
             patch.grad.zero()
             # optimizer.zero_grad()
-        loss.backward(retain_graph=True)
+        total_loss.backward(retain_graph=True)
 
         # optimizer.step()
         
         grad = patch.grad.detach().clone()
-        patch = patch + grad
+        patch = patch + 400 * grad
 
         # patch.data.clamp_(0, 1) # For optimizer
         patch = torch.clamp(patch, min=0.0, max=1.0) # For manual autograd
+
+        if e % 50 == 0:
+            print("------- Epoch {} -------".format(e))
+            # print("Loss: {:.4f}".format(loss.clone().detach().cpu().numpy()[0]))
+            print("Loss                : {} / {}".format(log_loss[0], loss[0]))
+            # print("Loss component      : {}".format(loss_components))
+
+        #     print("Obj score sum:        {:.4f} / {}".
+        #         format(conf_sum, len(grid_obj_conf)))
+
+            # print("Total variation loss: {:.4f} / {:.4f}".format(tv_loss, tv))
+
+        #     print("NPS loss:             {:.4f} / {:.4f}".
+        #         format(nps_loss, nps))
+
+            print("Total loss          : {:.5f}".format(total_loss[0]))
+            print(grad[0][0][0][0])
 
         if e % 100 == 0:
             transform = T.ToPILImage()
@@ -216,13 +222,14 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
 
         # print("\n")
     
-    # output = model(adv_img)
-    # bboxes, _ = non_max_suppression(output, conf_thres, nms_thres)
-    # print("---- Training Finished ----")
-    # print("New BBOX")
-    # print(bboxes)
-    # print("Original BBOX")
-    # print(orig_bboxes)
+    model.eval()
+    output = model(adv_img)
+    bboxes, _ = non_max_suppression(output, conf_thres, nms_thres)
+    print("---- Training Finished ----")
+    print("New BBOX")
+    print(bboxes)
+    print("Original BBOX")
+    print(orig_bboxes)
 
 
 def _create_data_loader(img_path, batch_size, img_size, n_cpu):
@@ -259,8 +266,8 @@ def _create_data_loader(img_path, batch_size, img_size, n_cpu):
 def run():
     print_environment_info()
     parser = argparse.ArgumentParser(description="Detect objects on images.")
-    parser.add_argument("-m", "--model", type=str, default="config/yolov3-tiny.cfg", help="Path to model definition file (.cfg)")
-    parser.add_argument("-w", "--weights", type=str, default="yolov3-tiny.weights", help="Path to weights or checkpoint file (.weights or .pth)")
+    parser.add_argument("-m", "--model", type=str, default="config/yolov3.cfg", help="Path to model definition file (.cfg)")
+    parser.add_argument("-w", "--weights", type=str, default="yolov3.weights", help="Path to weights or checkpoint file (.weights or .pth)")
     parser.add_argument("-i", "--images", type=str, default="data/samples", help="Path to directory with images to inference")
     parser.add_argument("-c", "--classes", type=str, default="data/coco.names", help="Path to classes label file (.names)")
     parser.add_argument("-o", "--output", type=str, default="output", help="Path to output directory")
