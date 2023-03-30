@@ -22,6 +22,11 @@ from pytorchyolo.detect import _draw_and_save_output_images
 
 Tensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
 
+def _get_grid_obj_conf(model_output, conf_thres):
+    return model_output[0][model_output[0][..., 4] > conf_thres]
+
+# def _get_
+
 def initialize_patch(img_size=416, patch_frac=0.015):
     # Initialize adversarial patch w/ random values
     img_size = img_size * img_size
@@ -89,7 +94,7 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     # Get dog image to attack
     dog_img = None
     dog_img_targs = None
-    for (img_path, img, targets) in tqdm.tqdm(dataloader, desc="Detecting"):
+    for idx, (img_path, img, targets) in enumerate(dataloader):
         # img values should be between [0, 1]
         dog_img = Variable(img.type(Tensor)).to(device)
         dog_img_targs = targets.view((3, 6)).to(device)
@@ -97,11 +102,14 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     # Get bboxes
     with torch.no_grad():
         model.eval()
-        detections = model(dog_img)
-        orig_bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
+        orig_output = model(dog_img)
+        grid_bbox_info = _get_grid_obj_conf(orig_output, conf_thres)
+        grid_cls = torch.argmax(grid_bbox_info[:,5:], dim=1)
+        orig_bboxes, _ = non_max_suppression(orig_output, conf_thres, nms_thres)
+        print(orig_bboxes)
 
     # Initialize patch
-    patch = initialize_patch(patch_frac=0.01).to(device)
+    patch = initialize_patch(patch_frac=0.015).to(device)
     patch.requires_grad_(True)
 
     # Attach patch to attacking image
@@ -120,27 +128,33 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
         patch.requires_grad_(True)
         patch_dummy = get_patch_dummy(patch, dog_img.shape, x, y).to(device)
         adv_img = patch_on_img(patch_dummy, dog_img, patch_mask, img_mask).to(device)
-
         output = model(adv_img)
-        bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
-        bboxes = bboxes[0]
-        bbox = [bboxes[i] for i in range(len(bboxes)) if bboxes[i][5] == 7][0]
-        print(bbox)
-        exit()
-        
 
+        if not model.training:
+            grid_bbox_info = _get_grid_obj_conf(output, conf_thres)
+            grid_cls = torch.argmax(grid_bbox_info[:,5:], dim=1)
+            truck_bboxes = [grid_bbox_info[i] for i in range(grid_bbox_info.shape[0]) 
+                if grid_cls[i] == 7]
+            if not truck_bboxes:
+                break
+            truck_confs = [truck_bboxes[i][4] for i in range(len(truck_bboxes))]
+            conf_sum = sum(conf for conf in truck_confs)
+            log_sum = torch.log(conf_sum)
+            # bbox = [bboxes[i] for i in range(len(bboxes)) if bboxes[i][5] == 7][0]
+
+        total_loss = conf_sum
         if patch.grad is not None:
             patch.grad.zero()
-        log_loss.backward(retain_graph=True)
+        total_loss.backward(retain_graph=True)
         grad = patch.grad.detach().clone()
-        patch = patch + 400 * grad
+        patch = patch + 100000 * grad
         patch = torch.clamp(patch, min=0.0, max=1.0) # For manual autograd
 
         # Print training info
         if e % 50 == 0:
             print("------- Epoch {} -------".format(e))
-            print("Loss                : {} / {}".format(log_loss[0], loss[0]))
-            print("Loss component      : {}".format(loss_components))
+            print("Loss                : {} / {}".format(log_sum, conf_sum))
+            # print("Loss component      : {}".format(loss_components))
         # Save adversarial image and patch checkpoints
         if e % 100 == 0:
             transform = T.ToPILImage()
