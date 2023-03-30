@@ -89,16 +89,29 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     # Get dog image to attack
     dog_img = None
     dog_img_targs = None
-    for (img_path, img, targets) in tqdm.tqdm(dataloader, desc="Detecting"):
+    for _, (img_path, img, targets) in enumerate(dataloader):
         # img values should be between [0, 1]
         dog_img = Variable(img.type(Tensor)).to(device)
+
+        # For untargeted attack
         dog_img_targs = targets.view((3, 6)).to(device)
+        # For targeted attack
+        # atk_target = torch.tensor([0.0, 50.0, 0.0, 0.0, 0.12, 0.12])
+
+    test_train = False
+    if test_train:
+        with torch.no_grad():
+            model.train()
+            output = model(dog_img)
+            loss, loss_components = compute_loss(output, dog_img_targs, model)
 
     # Get bboxes
-    with torch.no_grad():
-        model.eval()
-        detections = model(dog_img)
-        orig_bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
+    test_eval = True
+    if test_eval: 
+        with torch.no_grad():
+            model.eval()
+            detections = model(dog_img)
+            orig_bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
 
     # Initialize patch
     patch = initialize_patch(patch_frac=0.015).to(device)
@@ -106,7 +119,7 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
 
     # Attach patch to attacking image
     # x, y = 123, 300 # Around truck
-    x, y = 0, 0
+    x, y = 0, 0 # x == height from top, y == width from left
     patch_dummy = get_patch_dummy(patch, dog_img.shape, x, y).to(device)
     img_mask = patch_dummy.clone() # To mask the img
     img_mask[img_mask != 0] = 1.0 # Turn patch values into 1's
@@ -122,8 +135,10 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
         adv_img = patch_on_img(patch_dummy, dog_img, patch_mask, img_mask).to(device)
 
         output = model(adv_img)
-        loss, loss_components = compute_loss(output, dog_img_targs, model)
-        log_loss = torch.log(loss)
+        
+        if model.training:
+            loss, loss_components = compute_loss(output, dog_img_targs, model)
+            log_loss = torch.log(loss)
 
         if patch.grad is not None:
             patch.grad.zero()
