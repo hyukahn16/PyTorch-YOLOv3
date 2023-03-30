@@ -5,6 +5,8 @@ build
 *.egg-info
 dist
 output/
+saved_adv/
+adv_output/
 backup
 weights/*.weights
 weights/*.conv.*
