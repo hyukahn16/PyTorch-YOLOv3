@@ -94,6 +94,8 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
         dog_img = Variable(img.type(Tensor)).to(device)
 
         # For untargeted attack
+        # TODO: recalculate x-center, y-center, width, height based on
+        # size of the original image and NOT the rescale version
         dog_img_targs = targets.view((3, 6)).to(device)
         # For targeted attack
         # atk_target = torch.tensor([0.0, 50.0, 0.0, 0.0, 0.12, 0.12])
