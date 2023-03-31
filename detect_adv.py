@@ -6,12 +6,13 @@ import os
 import argparse
 import tqdm
 import shutil
-
+import time
 
 import torch
 import torchvision.transforms as T
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
+from torch import optim
 
 from pytorchyolo.models import load_model
 from pytorchyolo.utils.utils import load_classes, non_max_suppression, print_environment_info
@@ -75,37 +76,41 @@ def detect_directory(model_path, weights_path, img_path, classes, output_path,
 
 def detect(model, dataloader, output_path, conf_thres, nms_thres):
     # Delete existing images
-    try:
-        shutil.rmtree("adv_output")
-    except FileNotFoundError:
-        pass
+    delete_old_imgs = True
+    if delete_old_imgs:
+        try:
+            shutil.rmtree("adv_output")
+        except FileNotFoundError:
+            pass
 
     # Create output directory, if missing
     os.makedirs(output_path, exist_ok=True)
     os.makedirs("adv_output", exist_ok=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    transform = T.ToPILImage()
+    target_attack = True
+    use_optim = True
 
     # Get dog image to attack
-    dog_img = None
-    dog_img_targs = None
     for _, (img_path, img, targets) in enumerate(dataloader):
         # img values should be between [0, 1]
         dog_img = Variable(img.type(Tensor)).to(device)
 
-        # For untargeted attack
-        # TODO: recalculate x-center, y-center, width, height based on
-        # size of the original image and NOT the rescale version
-        dog_img_targs = targets.view((3, 6)).to(device)
-        # For targeted attack
-        # atk_target = torch.tensor([0.0, 50.0, 0.0, 0.0, 0.12, 0.12])
+        if target_attack:
+            # For targeted attack - target class == 50 == brocolli
+            targets = torch.tensor(
+                [[0.0, 50.0, 0.0, 0.0, 0.12, 0.12]]).to(device)
+        else:
+            # For untargeted attack
+            targets = targets.view((3, 6)).to(device)
 
     test_train = False
     if test_train:
         with torch.no_grad():
             model.train()
             output = model(dog_img)
-            loss, loss_components = compute_loss(output, dog_img_targs, model)
+            loss, loss_components = compute_loss(output, targets, model)
 
     # Get bboxes
     test_eval = True
@@ -114,57 +119,97 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
             model.eval()
             detections = model(dog_img)
             orig_bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
+            print(orig_bboxes)
 
     # Initialize patch
     patch = initialize_patch(patch_frac=0.015).to(device)
     patch.requires_grad_(True)
 
     # Attach patch to attacking image
-    # x, y = 123, 300 # Around truck
     x, y = 0, 0 # x == height from top, y == width from left
     patch_dummy = get_patch_dummy(patch, dog_img.shape, x, y).to(device)
     img_mask = patch_dummy.clone() # To mask the img
     img_mask[img_mask != 0] = 1.0 # Turn patch values into 1's
     patch_mask = (1 - img_mask).to(device) # To mask the patch
 
-    last_adv_img_path = None
+    # Training hyperparameters
     epoch = 1000
+    lr = 0.1
+    save_patch_iter = 100
+    save_adv_iter = 0
+    print_iter = 50
+    time_str = time.strftime("%m%d_%H%M")
     model.train()
+    if use_optim:
+        optimizer = optim.Adam([patch], lr=lr)
+        # gamma = 0.999
+        # lr_sched = optim.lr_scheduler.ExponentialLR(optimizer, gamma)
     for e in range(epoch+1):
-        patch = Variable(patch.type(Tensor))
-        patch.requires_grad_(True)
+        if not use_optim:
+            patch = Variable(patch.type(Tensor))
+            patch.requires_grad_(True)
+        
+        # Apply patch to original image
         patch_dummy = get_patch_dummy(patch, dog_img.shape, x, y).to(device)
         adv_img = patch_on_img(patch_dummy, dog_img, patch_mask, img_mask).to(device)
-
+        # Forward pass
         output = model(adv_img)
         
         if model.training:
-            loss, loss_components = compute_loss(output, dog_img_targs, model)
+            loss, loss_components = compute_loss(output, targets, model)
             log_loss = torch.log(loss)
+            total_loss = log_loss
+        else:
+            # Filter out grids with objective score less than threshold
+            grid_obj_conf = output[0][output[0][... , 4] > conf_thres]
+            total_loss = None
 
-        if patch.grad is not None:
-            patch.grad.zero()
-        log_loss.backward(retain_graph=True)
-        grad = patch.grad.detach().clone()
-        patch = patch + 400 * grad
-        patch = torch.clamp(patch, min=0.0, max=1.0) # For manual autograd
+        # Optimize
+        if use_optim:
+            optimizer.zero_grad()
+        else:
+            if patch.grad is not None:
+                patch.grad.zero()
+
+        total_loss.backward(retain_graph=True)
+
+        if use_optim:
+            optimizer.step()
+            # lr_sched.step()
+            # print(lr_sched.get_lr())
+        else:
+            grad = patch.grad.detach().clone()
+            patch = patch + lr * grad
+        
+        # Clamping
+        if use_optim:
+            patch.data.clamp_(0, 1) # For optimizer
+        else:
+            patch = torch.clamp(patch, min=0.0, max=1.0) # For manual autograd
 
         # Print training info
-        if e % 50 == 0:
+        if e % print_iter == 0:
             print("------- Epoch {} -------".format(e))
-            print("Loss                : {} / {}".format(log_loss[0], loss[0]))
-            print("Loss component      : {}".format(loss_components))
+            if model.training:
+                print("Loss                : {:3f} / {:3f}".format(
+                    log_loss[0], loss[0]))
+                print("Loss component      : {}".format(loss_components))
+
         # Save adversarial image and patch checkpoints
-        if e % 100 == 0:
-            transform = T.ToPILImage()
-
-            img = transform(adv_img[0])
-            last_adv_img_path = "adv_output/adv_img_{}.png".format(e)
-            img.save(last_adv_img_path)
-
+        if e % save_patch_iter == 0:
             img = transform(patch[0])
-            img.save("adv_output/adv_patch_{}.png".format(e))
+            img_path = "adv_output/adv_patch_{}_{}.png".format(e, time_str)
+            img.save(img_path)
+        if save_adv_iter > 0 and e % save_adv_iter == 0:
+            img = transform(adv_img[0])
+            img_path = "adv_output/adv_img_{}_{}.png".format(e, time_str)
+            img.save(img_path)
     
+    # Save last adversarial image
+    last_adv_img_path = "adv_output/adv_img_last_{}.png".format(time_str)
+    img = transform(adv_img[0]).save(last_adv_img_path)
+
+    # Evaluate bbox differences between adv img and original img
     model.eval()
     output = model(adv_img)
     bboxes, _ = non_max_suppression(output, conf_thres, nms_thres)
