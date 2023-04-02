@@ -100,7 +100,7 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
         if target_attack:
             # For targeted attack - target class == 50 == brocolli
             targets = torch.tensor(
-                [[0.0, 50.0, 0.006, 0.006, 0.12, 0.12]]).to(device)
+                [[0.0, 50.0, 0.06, 0.06, 0.12, 0.12]]).to(device)
         else:
             # For untargeted attack
             targets = targets.view((3, 6)).to(device)
