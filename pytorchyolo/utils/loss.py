@@ -66,6 +66,7 @@ def compute_loss(predictions, targets, model):
     # Build yolo targets
     tcls, tbox, indices, anchors = build_targets(
         predictions, targets, model, device)  # targets
+    # print("End compute_loss ---")
 
     # Define different loss functions classification
     BCEcls = nn.BCEWithLogitsLoss(
@@ -112,19 +113,27 @@ def compute_loss(predictions, targets, model):
                 t[range(num_targets), tcls[layer_index]] = 1
                 # Use the tensor to calculate the BCE loss
                 lcls += BCEcls(ps[:, 5:], t)  # BCE
+                # print(torch.argmax(t, 1))
+                # print(torch.argmax(ps[:, 5:], 1))
+                # print(lcls)
+
 
         # Classification of the objectness the sequel
         # Calculate the BCE loss between the on the fly generated target and the network prediction
         lobj += BCEobj(layer_predictions[..., 4], tobj) # obj loss
-
-    lbox *= 0.05 # bbox
-    lobj *= 1.0 # IoU
+        # print(layer_predictions.shape)
+        # print(layer_predictions[..., 4].shape)
+        # print(layer_predictions[..., 4])
+        # print(tobj.shape)
+        # print(tobj)
+        
+    lbox *= 0.05 # IoU loss
+    lobj *= 1.0 # objectiveness
     lcls *= 0.5 #
 
     # Merge losses
     loss = lbox + lobj + lcls
-
-    return loss, to_cpu(torch.cat((lbox, lobj, lcls, loss)))
+    return loss, torch.cat((lbox, lobj, lcls, loss))
 
 
 def build_targets(p, targets, model, device="cpu"):
@@ -136,7 +145,6 @@ def build_targets(p, targets, model, device="cpu"):
     ai = torch.arange(na, device=targets.device).float().view(na, 1).repeat(1, nt)
     # Copy target boxes anchor size times and append an anchor index to each copy the anchor index is also expressed by the new first dimension
     targets = torch.cat((targets.repeat(na, 1, 1), ai[:, :, None]), 2)
-
     for i, yolo_layer in enumerate(model.yolo_layers):
         # Scale anchors by the yolo grid cell size so that an anchor with the size of the cell would result in 1
         anchors = yolo_layer.anchors / yolo_layer.stride
