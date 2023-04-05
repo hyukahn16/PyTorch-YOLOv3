@@ -91,19 +91,15 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     transform = T.ToPILImage()
     target_attack = True
     use_optim = True
-
+    
     # Get dog image to attack
     for _, (img_path, img, targets) in enumerate(dataloader):
         # img values should be between [0, 1]
         dog_img = Variable(img.type(Tensor)).to(device)
 
-        if target_attack:
-            # For targeted attack - target class == 50 == brocolli
-            targets = torch.tensor(
-                [[0.0, 50.0, 0.0, 0.0, 0.12, 0.12]]).to(device)
-        else:
-            # For untargeted attack
-            targets = targets.view((3, 6)).to(device)
+        # For untargeted attack
+        targets = targets.view((3, 6)).to(device)
+    print(targets)
 
     test_train = False
     if test_train:
@@ -114,16 +110,25 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
 
     # Get bboxes
     test_eval = True
-    if test_eval: 
+    if test_eval:
         with torch.no_grad():
             model.eval()
             detections = model(dog_img)
             orig_bboxes, _ = non_max_suppression(detections, conf_thres, nms_thres)
-            print(orig_bboxes)
 
     # Initialize patch
     patch = initialize_patch(patch_frac=0.015).to(device)
     patch.requires_grad_(True)
+    print("Patch shape: {}".format(patch.shape))
+    print("Image shape: {}".format(dog_img.shape))
+    if target_attack:
+        center = (patch.shape[-1] / 2) / dog_img.shape[-1]
+        # shape = patch.shape[-1] / dog_img.shape[-1]
+        shape = 0.04
+        atk_cls = 50
+        # For targeted attack - target class == 50 == brocolli
+        targets = torch.tensor(
+            [[0.0, atk_cls, center, center, 0.12, 0.12]]).to(device)
 
     # Attach patch to attacking image
     x, y = 0, 0 # x == height from top, y == width from left
@@ -133,13 +138,14 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     patch_mask = (1 - img_mask).to(device) # To mask the patch
 
     # Training hyperparameters
-    epoch = 1000
+    epoch = 600
     lr = 0.1
-    save_patch_iter = 100
-    save_adv_iter = 0
+    save_patch_iter = epoch // 5
+    save_adv_iter = epoch // 2
     print_iter = 50
     time_str = time.strftime("%m%d_%H%M")
     model.train()
+    torch.set_printoptions(precision=4)
     if use_optim:
         optimizer = optim.Adam([patch], lr=lr)
         # gamma = 0.999
@@ -157,11 +163,15 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
         
         if model.training:
             loss, loss_components = compute_loss(output, targets, model)
-            log_loss = torch.log(loss)
+            log_loss = torch.log(loss_components[2])
             total_loss = log_loss
         else:
             # Filter out grids with objective score less than threshold
             grid_obj_conf = output[0][output[0][... , 4] > conf_thres]
+            print(grid_obj_conf.shape)
+            print(grid_obj_conf[..., 4])
+            print(torch.argmax(grid_obj_conf[:,5:], 1))
+            exit()
             total_loss = None
 
         # Optimize
@@ -191,9 +201,10 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
         if e % print_iter == 0:
             print("------- Epoch {} -------".format(e))
             if model.training:
-                print("Loss                : {:3f} / {:3f}".format(
-                    log_loss[0], loss[0]))
-                print("Loss component      : {}".format(loss_components))
+                print("Loss          : {:4f} / {:4f}".format(
+                    log_loss, loss[0]))
+                print("Loss component: {}".format(
+                    loss_components.detach().cpu()))
 
         # Save adversarial image and patch checkpoints
         if e % save_patch_iter == 0:
@@ -206,12 +217,19 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
             img.save(img_path)
     
     # Save last adversarial image
-    last_adv_img_path = "adv_output/adv_img_last_{}.png".format(time_str)
-    img = transform(adv_img[0]).save(last_adv_img_path)
+    last_img_path = "adv_output/adv_img_last_{}.png".format(time_str)
+    transform(adv_img[0]).save(last_img_path)
+    # Save last adversarial patch
+    last_patch_path = "adv_output/adv_patch_last_{}.png".format(time_str)
+    transform(patch[0]).save(last_patch_path)
 
     # Evaluate bbox differences between adv img and original img
     model.eval()
     output = model(adv_img)
+    grid_obj_conf = output[0][output[0][... , 4] > conf_thres]
+    print(grid_obj_conf.shape)
+    print(grid_obj_conf[..., 4])
+    print(torch.argmax(grid_obj_conf[:,5:], 1))
     bboxes, _ = non_max_suppression(output, conf_thres, nms_thres)
     print("---- Training Finished ----\n\n\n")
     print("New BBOX")
@@ -219,7 +237,7 @@ def detect(model, dataloader, output_path, conf_thres, nms_thres):
     print("Original BBOX")
     print(orig_bboxes)
 
-    return bboxes, [last_adv_img_path]
+    return bboxes, [last_img_path]
 
 
 def _create_data_loader(img_path, batch_size, img_size, n_cpu):
