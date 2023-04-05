@@ -218,7 +218,7 @@ def _draw_and_save_output_image(image_path, detections, img_size, output_path, c
     plt.gca().yaxis.set_major_locator(NullLocator())
     filename = os.path.basename(image_path).split(".")[0]
     output_path = os.path.join(output_path, f"{filename}.png")
-    plt.savefig(output_path, bbox_inches="tight", pad_inches=0.0)
+    plt.savefig(output_path, bbox_inches="tight", pad_inches=0.0, dpi=300)
     plt.close()
 
 
